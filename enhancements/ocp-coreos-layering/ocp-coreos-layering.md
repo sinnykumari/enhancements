@@ -62,11 +62,29 @@ This is the OpenShift integration of [ostree native containers](https://fedorapr
 
 ## Proposal
 
-1. The `machine-os-content` shipped as part of the release payload will change format to the new "native ostree-container" format, in which the OS content appears as any other OCI/Docker container.  
-  (In contrast today, the existing `machine-os-content` has an ostree repository inside a UBI image, which is hard to inspect and cannot be used for derived builds).  For more information, see [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/) and [CoreOS layering](https://github.com/coreos/enhancements/pull/7). 
-2. Documentation and tooling will be available for generating derived images from this base image
-3. This tooling will be used by the MCO to create derived images
+### Development Phases
 
+#### Phase 0
+- The `machine-os-content` shipped as part of the release payload will change format to the new "native ostree-container" format, in which the OS content appears as any other OCI/Docker container. Spike: [MCO-293](https://issues.redhat.com/browse/MCO-293).
+  (In contrast today, the existing `machine-os-content` has an ostree repository inside a UBI image, which is hard to inspect and cannot be used for derived builds).  For more information, see [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/) and [CoreOS layering](https://github.com/coreos/enhancements/pull/7).
+- Additionally, the MCO will be modified to allow a cluster admin to override the `osImageURL` field on MachineConfigs to supply a new base image.
+- In this phase, we can avoid performing a full image build. However, this approach has certain tradeoffs (see: [Buildless layering support](#buildless-layering-support)). 
+- Initial [preflight checks](#preflight-checks) are implemented. However, they will only be a warning and will not block image rollout since we will not (yet) have a way to bypass them.
+
+#### Phase 1
+- Iterate on the mechanism established in Phase 0 by enabling rendered MachineConfigs to be layered into a final OS image before they are applied to a nodes’ disk by using the BuildController. (see [Create Final Pool Images](#create-final-pool-images)).
+- The BuildController will be reliant upon the OpenShift Image Builder. Alternatively, we could create our own custom solution (see: [How The Final Image Will Be Built](#how-the-final-image-will-be-built) for caveats).)
+
+#### Phase 2
+- CRD implementation is finalized. This enables the following:
+  - A cluster admin can build and stage a final image prior to rolling it out.
+  - Preflight checks can block an image rollout (assuming the documented overrides are not used).
+  - Allows us to remove our dependency on the in-cluster registry and/or ImageStreams since it gives the cluster admin a place to configure where the final image is pushed. This allows them to optionally use an in-cluster registry or ImageStream assuming they’ve enabled those features on their cluster.
+- Modify the BuildController to use customized build pods instead of OpenShift Image Builder to create the finalized OS image (assuming we did the initial implementation with OpenShift Image Builder).
+- Add support for heterogeneous clusters using BuildController.
+
+#### Phase 3
+- oc command is augmented with sub-commands to provide syntactic sugar and a more polished synchronous user experience for cluster admins around staging a new OS image, watching preflight checks pass, and rolling it out. The web UI gains an equivalent UX flow.
 
 ### User Stories
 
@@ -126,6 +144,10 @@ The administrator can also use non-Dockerfile build systems such as Tekton or bu
 
 The result will be a container image that can be passed via an API to clusters, in a similar way as way user workloads (pods).
 
+The build and test workflow could resemble something like this:
+<!--Diagram Source: https://docs.google.com/drawings/d/1OE1-h5SiABVGG2WtILTT99tG7FawcVhsFPVLNf58ufM/edit-->
+![External image build workflow](./customer_base_image_build.svg)
+
 ### API Extensions ([MCO-280](https://issues.redhat.com/browse/MCO-280))
 
 Note we will continue to support MachineConfig.  The key goal is to allow the user to override the rhel-coreos base image.
@@ -136,7 +158,12 @@ This is currently prototyped in the https://github.com/openshift/machine-config-
 
 ##### User workflow in layering model
 Using layering model, users will be able to build, test and use a custom image based on their requirements.
-The user experience is described in the sub-sections below:
+
+This process could look something like this:
+<!--Diagram Source: https://docs.google.com/drawings/d/1gcumom25MHMW3l7mmYEXIcdW0b-MbkhJv4DSyqm_qA8/edit-->
+![Final image build and rollout process diagram](image_rollout.svg)
+
+The user experience is described in detail below:
 
 ###### Create Customer Base Image
 - First of all the user will create a Customer Base Image. This image can run on compatible OCP clusters such as HyperShift, Heterogeneous cluster, Single Node OpenShift.
@@ -168,6 +195,7 @@ When the Customer Base Image has been successfully tagged into cluster, a final 
 - By default the Customer Base Image will be applied to all pools unless the user specifies a target pool. There will also be an imagestream per pool that can be used for overrides as well.
 - The user can watch the pool to keep track of build progress for the pool image to troubleshoot in case build fails.
 - Final pool image generated from this build will be also available to customer to pull and test. This exact image will be used by MCO to update nodes in the desired pools.
+- There are some [implementation details](#how-the-final-image-will-be-built) that will need to be solved.
 
 **Note**: This text is proposing a new CRD and some custom flow.  Another alternative is having the final pool image be pushed to an imagestream, and simply using pool pause to control final rollout.
 
@@ -201,7 +229,7 @@ When the Customer Base Image has been successfully tagged into cluster, a final 
   $ oc add upgrade —layeredsource -f
   ```
 - Final image gets generated in-cluster once MCO upgrades.
-- Preflight check is required here on incoming OS image vs user supplied image. Otherwise, the user will get to 84% and learn that their supplied image has a big problem.
+- [Preflight check](#preflight-checks) is required here on incoming OS image vs user supplied image. Otherwise, the user will get to 84% and learn that their supplied image has a big problem.
 
 #### Spike to investigate and flesh out: Special pod
 
@@ -212,6 +240,37 @@ A key advantage of this approach is that we could make it work to also use Confi
 Note that this could work on top of a high level ImageStream proposal to support node specific overrides. 
 
 ### Implementation details
+
+#### Buildless layering support
+
+<!--Diagram Source: https://docs.google.com/drawings/d/1sM5QLxmAfx4GKZEM5Y5zNT-pT7t6shTkwdaM283-R3A/edit-->
+![Buildless layering support](buildless_layering_support.svg)
+
+As a first-pass, no final image build will be needed. This mechanism works thusly:
+1. We write the new OS image to the underlying node.
+1. Render and write the MachineConfigs on top of the new OS image.
+1. Reboot the node.
+  
+While useful for a proof-of-concept, it does not afford us the safety and other benefits that OS image layering affords such as being able to roll back to an older image and MachineConfig.
+
+#### How the final image will be built
+
+While it is possible to render a MachineConfig and then append the files to an image without performing a container build context, certain MachineConfig updates require running a command on the underlying node. For example, changing kernel types will invoke `rpm-ostree`. Because of this fact, we still need a container build context as well as the capability of running arbitrary commands.
+
+It is very tempting to use the [OpenShift Image Builder](https://github.com/openshift/builder) mechanism to build the necessary final images. However, there are a few issues with doing so:
+
+- [Lack of manifestlist support](#manifest-list-support) means that we'll need to wrap multiple image builds within a pipeline to ensure that all final image builds complete at the same time (or not at all!) before we write the manifestlist.
+- OpenShift Image Builds may become an [optional OpenShift feature](https://github.com/openshift/enhancements/blob/master/enhancements/installer/component-selection.md), so we may not be able to depend on it being present in the future.
+
+Because of the above, it may be necessary for the MCO to manage its own build pods and pipeline completely independent of OpenShift Image Builder since MachineConfig support is essential. It is also worth mentioning that this facility is only intended to make an externally-provided base image usable within a given cluster. Therefore, the full inner workings of this facility will not be completely exposted to cluster admins.
+
+Related Spike: https://issues.redhat.com/browse/MCO-292
+
+#### Preflight Checks
+
+We need to ensure that a cluster admins' customized image contains the same components as the default OS image provided by OpenShift. At a minimum, we should validate that all base image layers are present within the customized OS image. There are more advanced checks we may wish to perform in the future so a pluggable architecture is needed.
+
+Related Spike: https://issues.redhat.com/browse/MCO-298
 
 ####  Where the image will live
 Discuss in cluster build and external registry
@@ -256,6 +315,8 @@ RUN ignition-liveapply /tmp/ignition.json && rm -f /tmp/ignition.json
 This build process will be tracked via a `mco-coreos-build` `BuildConfig` object which will be monitored by the operator.
 
 The output of this build process will be pushed to the `imagestream/mco-coreos`, which should be used by further build processes.
+
+It should be noted that MachineConfigs will behave exactly the same as they do today. In other words, they will not be subject to the same staging and rollout process that using a custom base image would.
 
 #### Handling booting old nodes
 
