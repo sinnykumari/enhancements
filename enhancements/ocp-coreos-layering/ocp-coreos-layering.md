@@ -272,13 +272,56 @@ We need to ensure that a cluster admins' customized image contains the same comp
 
 Related Spike: https://issues.redhat.com/browse/MCO-298
 
-####  Where the image will live
-Discuss in cluster build and external registry
-Related spikes:
+#### Where the image will live
 
+For [Phase 0](#phase-0) operation, the MCO doesn't have to worry about where the image is stored, since it's not doing any of the building. 
+
+For [Phase 1](#phase-1) and [Phase 2](#phase-2), we may be performing in-cluster ["builds"](#how-the-final-image-will-be-built) and we would then need a place to keep the result and serve it up for at least:
+
+- Inspection by a scanning system
+- Retrieval by our cluster nodes
+
+The reason we're so worried about keeping these images instead of just rebuilding them on-the-fly from the content we're already storing is a function of [Image Reproducibility](#image-reproducibility) and time -- builds take awhile -- although depending on the content, we might be able to speed that up by assembling a tarfile ourselves instead of doing an entire build.
+
+##### Internal Registry
+
+Initially we can use the internal registry to host our images, and that does make things easier because it handles all of the storage management behind the scenes.
+
+##### Alternative/External Registry
+
+Unfortunatly, due to things like baremental deployments and other types of minimal cluster deployment, the internal registry is not guaranteed to always be present, and so we can't always depend on it. This requires us to allow for and/or provide some other place to keep our images -- some type of alternative/external registry.
+
+This alternative registry could be:
+
+- a user-supplied external registry + pull/push credential ( strawman: quay.io )
+- an MCO-supplied minimal registry such that the MCO would be able to serve and store the images it produces
+
+For a secured user-supplied external registry, we would need to make sure that the credentials were available such that: 
+
+- the MCO can push the final image and 
+- rpm-ostree can pull the image during deployment
+
+An external registry would also carry with it extra network overhead, as it could potentially be hosted outside the cluster, but that is an optimization problem to be dealt with later.
+
+An MCO-supplied registry would need to be robust enough to scale to support multiple updating pools at once and be available during a control-plane upgrade, so a simple in-memory registry running on a single node is probably not sufficient.
+
+We do not desire to recreate the internal registry piece-by-piece, so the functionality provided by any MCO-supplied registry would be absolutely minimal and limited only to what would be required to support the MCO's layering operations.
+
+Related Spikes:
 https://issues.redhat.com/browse/MCO-281
 https://issues.redhat.com/browse/MCO-286
 
+#### Image reproducibility
+
+For images we would build in "Phase 1" and "Phase 2", the desire would eventually be that:
+
+- As long as we have the same customer base image and the same MCO content, the output of our image build should always be the same and result in the same image
+
+This would allow for easy change detection, as we'd be able to figure out if an image changed just by observing its digest. It would also make storing and preserving the MCO-built image less important -- we could always rebuild it, the only cost would be time.
+
+Unfortunately, this is not currently a "solved problem" in the container image space, and we as the MCO don't have full control of the problem space to solve it. All it takes is for a single byte to be out of place -- something as simple as a timestamp -- and it's unclear whether we will be able to solve this in the near future.
+
+For now we're assuming we will not have 100% reproducible images and are planning accordingly.
 
 #### Upgrade flow
 
