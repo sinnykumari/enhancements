@@ -67,11 +67,12 @@ This is the OpenShift integration of [ostree native containers](https://fedorapr
 #### Phase 0
 - The `machine-os-content` shipped as part of the release payload will change format to the new "native ostree-container" format, in which the OS content appears as any other OCI/Docker container. Spike: [MCO-293](https://issues.redhat.com/browse/MCO-293).
   (In contrast today, the existing `machine-os-content` has an ostree repository inside a UBI image, which is hard to inspect and cannot be used for derived builds).  For more information, see [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/) and [CoreOS layering](https://github.com/coreos/enhancements/pull/7).
-- Additionally, the MCO will be modified to allow a cluster admin to override the `osImageURL` field on MachineConfigs to supply a new base image.
-- In this phase, we can avoid performing a full image build. However, this approach has certain tradeoffs (see: [Buildless layering support](#buildless-layering-support)). 
-- Initial [preflight checks](#preflight-checks) are implemented. However, they will only be a warning and will not block image rollout since we will not (yet) have a way to bypass them.
+- This new format container will *also* be shipped alongside the toplevel release image with a matching version scheme.  For example, there will now be e.g `quay.io/openshift-release-dev/rhel-coreos-8:4.12.0-rc.5-x86_64`.
+- The MCO will be modified to allow a cluster admin to override the `osImageURL` field on MachineConfigs to supply a new base image that overrides the default (RHEL) CoreOS image.  The administrator can use the above image tags in a `Dockerfile` or other container build system.
+- Everything else largely stays the same; the MCD continues to perform config changes per node.  (See: [Buildless layering support](#buildless-layering-support)). 
 
 #### Phase 1
+- Initial [preflight checks](#preflight-checks) are implemented. However, they will only be a warning and will not block image rollout since we will not (yet) have a way to bypass them.
 - Iterate on the mechanism established in Phase 0 by enabling rendered MachineConfigs to be layered into a final OS image before they are applied to a nodes’ disk by using the BuildController. (see [Create Final Pool Images](#create-final-pool-images)).
 - The BuildController will be reliant upon the OpenShift Image Builder. Alternatively, we could create our own custom solution (see: [How The Final Image Will Be Built](#how-the-final-image-will-be-built) for caveats).)
 
