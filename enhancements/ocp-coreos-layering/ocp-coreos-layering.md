@@ -102,8 +102,9 @@ The team uses the OCP docs and looks at examples such as https://github.com/core
 
 They build this image in one of their “central” clusters and publish it into their air-gapped internal registry (registry.internal.example.bank) as `registry.internal.example.bank/examplecorp/rhel-coreos-base:4.12`.  (Note: The image could be built outside of a cluster too using any container build tools).
 
-They change a configuration (CRD) which causes their staging 4.12 cluster to use this new image for worker nodes (see below for more information on the configuration). The MCO in the staging cluster rolls out this image, including draining nodes in the same way it handles MachineConfig and OS updates today.
+Next, they find the digested pull specification for this image (e.g. `registry.internal.example.bank/examplecorp/rhel-coreos-base@sha256:0ab2...`).
 
+They create a `MachineConfig` object which specifies this pull spec as `osImageURL`.  This updated image is then rolled out across the targeted worker pool by MCO, including draining nodes in the same way it handles MachineConfig and OS updates today.
 
 When the rollout is successful to worker nodes on staging, they also roll it out to the control plane nodes.
 
@@ -111,21 +112,19 @@ They deploy the change across the rest of their (e.g. 5) production clusters.
 
 A few weeks later, Red Hat releases a kernel security update as part of a cluster image, which appears as a new image at registry.redhat.io/rhel-coreos-8.6:4.12. This triggers a rebuild on their central cluster, which is successful and pushed to the mirror registry.
 
-The cluster is configured to poll for changes to this image in the remote registry, and when that happens, the updated image will be automatically rolled out to all nodes - and note this will happen *without* an `oc adm upgrade`.  (Note: rollout will be configurable)
+As before, the administrator finds the new digested pull spec, and updates the `MachineConfig` object.  As before, this change is rolled out to the nodes.
 
-
+Note that future `oc adm upgrade` will *not* override this image - the node OS version is now decoupled from the cluster/release image default.
 
 #### Kernel hotfix in cluster
 
-example.corp runs OCP on aarch64 on bare metal.  An important regression is found that only affects the aarch64 architecture on some bare metal platforms.  While a fix is queued for a RHEL 8.x z-stream, there is also risk in fast tracking the fix to *all* OCP platforms.  Because this fix is important to example.corp, a hotfix is provided via a pre-release `kernel.rpm`.
+example.corp runs OCP 4.12 on aarch64 on bare metal.  An important regression is found that only affects the aarch64 architecture on some bare metal platforms.  While a fix is queued for a RHEL 8.x z-stream, there is also risk in fast tracking the fix to *all* OCP platforms.  Because this fix is important to example.corp, a hotfix is provided via a pre-release `kernel.rpm`.
 
-The OCP admins at example.corp get a copy of this hotfix RPM into their internal data store, and configure a derived build where the kernel RPMs are applied. The MCO builds a derived image and rolls it out.
+The OCP admins at example.corp get a copy of this hotfix RPM into their internal data store, and use the latest tagged z-stream RHEL CoreOS image for 4.12 (e.g. `registry.redhat.io/rhel-coreos-8:4.12.7`)
 
-(Note: this flow would likely be explained as a customer portal document, etc.)
+They use this as part of a `Dockerfile` build that overrides the kernel, and just as above in the 3rd party scanner case, they find the digested pull spec and override via a `MachineConfig` with custom `osImageURL`.
 
-Later, a fixed kernel with a newer version is released in the main OCP channels.  The override continues to apply, and will currently require manual attention at some point later to remove the override when we can guarantee the non-hotfix kernel has the desired fix.
-
-A future enhancement will help automate the above.  For example, we may support associating a Bugzilla number with the override.  Then, the system can more intelligently look at an upgrade and see whether a new kernel package that is chronologically/numerically higher actually fixes the BZ - and only drop the override once it does.
+Later, a fixed kernel is released in the official `registry.redhat.io/rhel-coreos-8:4.12.8` image.  The customer (and support) can easily see the kernel version in that image, and know with confidence that they can upgrade to a default cluster level of `4.12.8`.  Specifically, the customer uses `oc adm upgrade` (or the GUI), and after that is complete they remove the `MachineConfig` object, which removes all the OS level overrides.
 
 #### Externally built image
 
