@@ -65,12 +65,13 @@ This is the OpenShift integration of [ostree native containers](https://fedorapr
 ### Development Phases
 
 #### Phase 0
-- The `machine-os-content` shipped as part of the release payload will change format to the new "native ostree-container" format, in which the OS content appears as any other OCI/Docker container. Spike: [MCO-293](https://issues.redhat.com/browse/MCO-293).
+- The `machine-os-content` shipped as part of the release payload will change format to the new "native ostree-container" format, in which the OS content appears as any other OCI/Docker container. Epic: [MCO-293](https://issues.redhat.com/browse/MCO-293).
   (In contrast today, the existing `machine-os-content` has an ostree repository inside a UBI image, which is hard to inspect and cannot be used for derived builds).  For more information, see [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/) and [CoreOS layering](https://github.com/coreos/enhancements/pull/7).
 - This new format container will *also* be shipped alongside the toplevel release image with a matching version scheme.  For example, there will now be e.g `quay.io/openshift-release-dev/rhel-coreos-8:4.12.0-rc.5-x86_64`.
 - The MCO will be modified to allow a cluster admin to override the `osImageURL` field on MachineConfigs to supply a new base image that overrides the default (RHEL) CoreOS image.  The administrator can use the above image tags in a `Dockerfile` or other container build system.
 - Everything else largely stays the same; the MCD continues to perform config changes per node.  (See: [Buildless layering support](#buildless-layering-support)). 
 
+**Note** Phase 0 is finalized and this is what we will be implementing in 4.12. Based on the feedback and our learnings, details mentioned for remaining phases may change.
 #### Phase 1
 - Initial [preflight checks](#preflight-checks) are implemented. However, they will only be a warning and will not block image rollout since we will not (yet) have a way to bypass them.
 - Iterate on the mechanism established in Phase 0 by enabling rendered MachineConfigs to be layered into a final OS image before they are applied to a nodes’ disk by using the BuildController. (see [Create Final Pool Images](#create-final-pool-images)).
@@ -169,7 +170,7 @@ The user experience is described in detail below:
 ###### Create Customer Base Image
 - First of all the user will create a Customer Base Image. This image can run on compatible OCP clusters such as HyperShift, Heterogeneous cluster, Single Node OpenShift.
 - Create a Dockerfile that uses compatible rhcos image and add the custom content (e.g. rpm, files) on top of it:
-  ```
+  ``` containerfile
   FROM registry.redhat.io/rhel-coreos:4.11
   RUN cd /etc/yum.repos.d/ && \
     curl -LO <user_yum_repo> && \
@@ -182,12 +183,12 @@ The user experience is described in detail below:
 - Build the image using any image build tool (e.g. podman) and push it to the registry (e.g. quay)
 - Generated Customer Base Image can be manually tested or integrated with a CI workflow to run desired internal tests. For example, this image can be run through a security scanner the same as any other image.
 - Once all the tests on the image are green, it can be tagged for use in a OCP cluster, like:
-  ```
+  ```bash
   oc tag --source=docker quay.io/examplecorp/custom-rhel-coreos:4.11 machine-config-operator/coreos-external:latest
   ```
 - Once the image has been tagged,  some verification will be performed in the cluster to ensure that rhcos version present in the Customer Base Image is compatible with the cluster and feedback will be provided accordingly.
-    - **On compatibility check passed**: “quay.io/examplecorp/custom-rhel-coreos:4.11 successfully tagged”
-    - **On compatibility check failed**: “failed to tag quay.io/examplecorp/custom-rhel-coreos:4.11: rhcos version 89.2423423 not compatible with OCP 4.11.5, expected: rhcos version 89.43920432”
+  - **On compatibility check passed**: “quay.io/examplecorp/custom-rhel-coreos:4.11 successfully tagged”
+  - **On compatibility check failed**: “failed to tag quay.io/examplecorp/custom-rhel-coreos:4.11: rhcos version 89.2423423 not compatible with OCP 4.11.5, expected: rhcos version 89.43920432”
 
 ###### Create Final Pool Images
 When the Customer Base Image has been successfully tagged into cluster, a final image will be created for each pool.
@@ -202,13 +203,13 @@ When the Customer Base Image has been successfully tagged into cluster, a final 
 
 ###### Rollout of Final Image to Node
 - Once the built final pool image has been tested by the user, they can initiate a rollout to a specific pool:
-   ```
+   ```bash
    $ oc rollout custombuild mcp/worker
    This is a disruptive action and will replace the current rhcos image with a custom build. Are you sure?
   ```
 - Rollout follows the existing MCO rollout paradigm - i.e. the images roll out to max unavailable nodes in a pool. This will cause reboots.
 - After rollout has finished, there is an easy way to see which builds are present in the pools:
-  ```
+  ```bash
   $ oc get custombuilds -n openshift-machine-config-operator
   BUILD         POOL         BASEIMAGE     STATUS        LOCATION
   cp-layers    master        “quay.io…”    Pending          TBD
@@ -217,7 +218,7 @@ When the Customer Base Image has been successfully tagged into cluster, a final 
 
 ###### Reverting to Standard OS
 - At any given time, the user should be able to revert to the stock rhcos image for that cluster which comes in via release image:
-  ```
+  ```bash
   $ oc delete custombuild mcp/worker
   This is a disruptive action and will replace custom build XXXX.XX with rhelcoreos 89.12. Are you sure?
   ```
@@ -226,7 +227,7 @@ When the Customer Base Image has been successfully tagged into cluster, a final 
 
 ###### Providing Customer Base Image during cluster upgrade
 - OS can be updated with Customer Base Image during a cluster upgrade. For this, the user will need to create the Customer Base Image using the incoming rhcos version and supply to upgrade so that default osimageurl is not used:
-  ```
+  ```bash
   $ oc add upgrade —layeredsource -f
   ```
 - Final image gets generated in-cluster once MCO upgrades.
@@ -263,7 +264,8 @@ It is very tempting to use the [OpenShift Image Builder](https://github.com/open
 - [Lack of manifestlist support](#manifest-list-support) means that we'll need to wrap multiple image builds within a pipeline to ensure that all final image builds complete at the same time (or not at all!) before we write the manifestlist.
 - OpenShift Image Builds may become an [optional OpenShift feature](https://github.com/openshift/enhancements/blob/master/enhancements/installer/component-selection.md), so we may not be able to depend on it being present in the future.
 
-Because of the above, it may be necessary for the MCO to manage its own build pods and pipeline completely independent of OpenShift Image Builder since MachineConfig support is essential. It is also worth mentioning that this facility is only intended to make an externally-provided base image usable within a given cluster. Therefore, the full inner workings of this facility will not be completely exposted to cluster admins.
+Because of the above, it may be necessary for the MCO to manage its own build pods and pipeline completely independent of OpenShift Image Builder since MachineConfig support is essential.
+It is also worth mentioning that this facility is only intended to make an externally-provided base image usable within a given cluster. Therefore, the full inner workings of this facility will not be completely exposted to cluster admins.
 
 Related Spike: https://issues.redhat.com/browse/MCO-292
 
@@ -328,6 +330,16 @@ For now we're assuming we will not have 100% reproducible images and are plannin
 
 See [OSUpgrades](https://github.com/openshift/machine-config-operator/blob/master/docs/OSUpgrades.md) for the current flow before this proposal.
 
+**Phase 0**
+
+- **With default OSImageURL:**
+When cluster is not using any custom OSImageURL, MCO will perform OS update as usual with what is supplied in the upcoming release image.
+- **With custom OSImageURL:** With custom OSImageURL provided, cluster admin grabs the steering wheel so they decide how and when to update the OS.
+  - MCO will respect the overridden OSImageURL provided by cluster admin and will stay on the older image after upgrade.
+  - When cluster admin is ready to upgrade OS, they build new image derived from latest default RHEL CoreOS image supplied in release image and provides it via MachineConfig.
+  - At any point, the cluster can be switched back to default OS Image by deleting the custom OSImageURL supplied via MachineConfig.
+
+**Final flow**
 1. The "base image" will be part of the release image, the same as today.
 1. The CVO will replace a ConfigMap in the MCO namespace with the OS payload reference, as it does today.
 1. The MCO will update an `imagestream` object (e.g. `openshift-machine-config-operator/rhel-coreos`) when this ConfigMap changes.
@@ -531,7 +543,8 @@ Multiarch Spike: https://issues.redhat.com/browse/MCO-277
 
 #### Hypershift
 
-[Hypershift]https://github.com/openshift/hypershift has its own implementation of inplace upgrading for nodepools today. A special mode of the MCD is used in conjunction with Hypershift’s hosted control plane operator to facilitate this. We would definitely want feature parity in Hypershift eventually, as well as the benefits layering workflow would have for managing large amounts of hosted clusters. This can lag behind self-driving OCP for the time being.
+[Hypershift]https://github.com/openshift/hypershift has its own implementation of inplace upgrading for nodepools today. A special mode of the MCD is used in conjunction with Hypershift’s hosted control plane operator to facilitate this.
+We would definitely want feature parity in Hypershift eventually, as well as the benefits layering workflow would have for managing large amounts of hosted clusters. This can lag behind self-driving OCP for the time being.
 
 ### Risks and Mitigations
 
@@ -635,7 +648,7 @@ MCO-specific tests will be run during each PR as part of the MCOs presubmits. In
 
 ### Graduation Criteria
 
-The main goal of tech preview (4.12) is to implement image build and application, to the point a newly installer cluster on the new format is functional. There will be no user-facing changes. The goal for GA(4.12 for hotfix, 4.13) is to ensure upgrade success and readiness for wider adoption by users.
+ The goal for 4.12 is to have a supported path for users to apply hotfix (GA) into base RHEL CoreOS and ability to try out 3rd party software (Tech Preview).
 
 #### Dev Preview -> Tech Preview
 
